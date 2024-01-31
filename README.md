@@ -1,0 +1,2 @@
+# snaildb
+simple embedded database
