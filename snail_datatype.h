@@ -1,3 +1,5 @@
+#ifndef SNAILDTYPES_H
+#define SNAILDTYPES_H
 
 #include <string>
 
@@ -67,3 +69,5 @@ public:
 private:
     int intValue;
 };
+
+#endif // SNAILDTYPES
