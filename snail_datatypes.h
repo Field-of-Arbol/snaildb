@@ -2,15 +2,14 @@
 #define SNAILDT_H
 
 #include <string>
-#include <stdexcept> 
-
+#include <stdexcept>
 class BaseSDataType
 {
 public:
     BaseSDataType(size_t max_size);
     virtual ~BaseSDataType();
-    virtual std::string getValue() const = 0;
 
+    std::string getValue() const;
     std::string prefix(int length) const;
     std::string padStr(const std::string &value, size_t maxlength) const;
 
@@ -25,7 +24,6 @@ public:
     StrCol(size_t max_length);
 
     void setValue(const std::string &new_string);
-    std::string getValue() const override;
 };
 
 class IntCol : public BaseSDataType
@@ -34,7 +32,6 @@ public:
     IntCol(size_t max_length);
 
     void setValue(int value);
-    std::string getValue() const override;
 
 private:
     int intValue;

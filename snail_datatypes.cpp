@@ -16,6 +16,11 @@ std::string BaseSDataType::padStr(const std::string &value, size_t maxlength) co
     }
 }
 
+std::string BaseSDataType::getValue() const
+{
+    return padStr(strValue, max_size);
+}
+
 StrCol::StrCol(size_t max_length) : BaseSDataType(max_length) {}
 
 void StrCol::setValue(const std::string &new_string)
@@ -30,11 +35,6 @@ void StrCol::setValue(const std::string &new_string)
     }
 }
 
-std::string StrCol::getValue() const
-{
-    return strValue;
-}
-
 IntCol::IntCol(size_t max_length) : BaseSDataType(max_length)
 {
     setValue(0);
@@ -42,21 +42,6 @@ IntCol::IntCol(size_t max_length) : BaseSDataType(max_length)
 
 void IntCol::setValue(int value)
 {
-    std::string sValue = std::to_string(value);
-
-    // Trim or pad the string to fit the specified max_length
-    if (sValue.length() > max_size)
-    {
-        strValue = sValue.substr(0, max_size);
-    }
-    else
-    {
-        strValue.resize(max_size, '0');
-    }
+    strValue = std::to_string(value);
     intValue = value;
-}
-
-std::string IntCol::getValue() const
-{
-    return strValue;
 }
