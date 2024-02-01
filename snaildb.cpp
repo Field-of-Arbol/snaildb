@@ -37,16 +37,16 @@ void SnailDef::addIntColProp(const std::string &colName, size_t max_length)
 
 std::string SnailDef::getRow() const
 {
-    std::ostringstream result;
+    std::string result;
     for (size_t i = 0; i < dataTypes.size(); ++i)
     {
-        result << dataTypes[i]->getValue();
+        result += dataTypes[i]->getValue();
         if (i != dataTypes.size() - 1)
         {
-            result << separator;
+            result += separator;
         }
     }
-    return result.str();
+    return result;
 }
 
 BaseSDataType *SnailDef::getProp(size_t index) const

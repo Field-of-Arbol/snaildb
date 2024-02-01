@@ -6,13 +6,14 @@ BaseSDataType::~BaseSDataType() {}
 
 std::string BaseSDataType::padStr(const std::string &value, size_t maxlength) const
 {
-    if (strValue.length() >= max_size)
+
+    if (value.length() >= max_size)
     {
-        return strValue.substr(0, max_size);
+        return value.substr(0, max_size);
     }
     else
     {
-        return std::string(max_size - strValue.length(), ' ') + strValue;
+        return std::string(max_size - value.length(), ' ') + value;
     }
 }
 
@@ -35,10 +36,7 @@ void StrCol::setValue(const std::string &new_string)
     }
 }
 
-IntCol::IntCol(size_t max_length) : BaseSDataType(max_length)
-{
-    setValue(0);
-}
+IntCol::IntCol(size_t max_length) : BaseSDataType(max_length) { setValue(0); }
 
 void IntCol::setValue(int value)
 {

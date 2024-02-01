@@ -11,18 +11,17 @@ class SnailDef;
 class SnailDef
 {
 public:
-
-virtual ~SnailDef();
+    virtual ~SnailDef();
     char separator = '|';
 
-    virtual void addStrColProp(const std::string& colName, size_t max_length);
-    virtual void addIntColProp(const std::string& colName, size_t max_length);
+    virtual void addStrColProp(const std::string &colName, size_t max_length);
+    virtual void addIntColProp(const std::string &colName, size_t max_length);
 
     virtual std::string getRow() const;
-    BaseSDataType* getProp(size_t index) const;
+    BaseSDataType *getProp(size_t index) const;
 
 protected:
-    std::vector<BaseSDataType*> dataTypes;
+    std::vector<BaseSDataType *> dataTypes;
     std::vector<std::string> colNames;
 };
 
