@@ -1,13 +1,13 @@
 #ifndef SNAILDT_H
 #define SNAILDT_H
 
-#include <string>
 #include <stdexcept>
-class BaseSDataType
+#include <string>
+class SnailDataType
 {
 public:
-    BaseSDataType(size_t max_size);
-    virtual ~BaseSDataType();
+    SnailDataType(size_t max_size);
+    virtual ~SnailDataType();
 
     std::string getValue() const;
     std::string prefix(int length) const;
@@ -18,7 +18,7 @@ protected:
     std::string strValue;
 };
 
-class StrCol : public BaseSDataType
+class StrCol : public SnailDataType
 {
 public:
     StrCol(size_t max_length);
@@ -26,7 +26,7 @@ public:
     void setValue(const std::string &new_string);
 };
 
-class IntCol : public BaseSDataType
+class IntCol : public SnailDataType
 {
 public:
     IntCol(size_t max_length);

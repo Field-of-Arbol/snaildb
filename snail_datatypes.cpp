@@ -1,10 +1,11 @@
 #include "snail_datatypes.h"
 
-BaseSDataType::BaseSDataType(size_t max_size) : max_size(max_size) {}
+SnailDataType::SnailDataType(size_t max_size) : max_size(max_size) {}
 
-BaseSDataType::~BaseSDataType() {}
+SnailDataType::~SnailDataType() {}
 
-std::string BaseSDataType::padStr(const std::string &value, size_t maxlength) const
+std::string SnailDataType::padStr(const std::string &value,
+                                    size_t maxlength) const
 {
 
     if (value.length() >= max_size)
@@ -17,12 +18,12 @@ std::string BaseSDataType::padStr(const std::string &value, size_t maxlength) co
     }
 }
 
-std::string BaseSDataType::getValue() const
+std::string SnailDataType::getValue() const
 {
     return padStr(strValue, max_size);
 }
 
-StrCol::StrCol(size_t max_length) : BaseSDataType(max_length) {}
+StrCol::StrCol(size_t max_length) : SnailDataType(max_length) {}
 
 void StrCol::setValue(const std::string &new_string)
 {
@@ -36,7 +37,7 @@ void StrCol::setValue(const std::string &new_string)
     }
 }
 
-IntCol::IntCol(size_t max_length) : BaseSDataType(max_length) { setValue(0); }
+IntCol::IntCol(size_t max_length) : SnailDataType(max_length) { setValue(0); }
 
 void IntCol::setValue(int value)
 {
