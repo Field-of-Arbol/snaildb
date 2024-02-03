@@ -12,6 +12,7 @@
 class SnailDB
 {
 public:
+    SnailDB();
     virtual ~SnailDB();
 
     void addStrColProp(const std::string &colName, size_t max_length);
@@ -27,16 +28,15 @@ public:
     size_t getSize() const;
 
 protected:
-    SnailDataType ***data;                     // Two-dimensional array of pointers
+    std::vector<std::vector<SnailDataType *>> data;
     std::map<std::string, size_t> colIndexMap; // Map to store column indices
     std::vector<std::string> colNames;
     char separator = '|';
-    size_t numRows = 0; // Number of rows
-    size_t numCols;     // Number of columns
-    size_t cursor = 0;  // Current cursor position
-    void ensureColInitialized(const std::string &colName, size_t requiredRows);
+    size_t numRows = -1; // Number of rows
+    size_t cursor = 0;   // Current cursor position
+    void ensureColInitialized(const std::string &colName);
     std::vector<bool> indexedColumns; // Vector to track indexed columns
-
+    std::vector<ColumnInfo> columnInfo;
     //
 };
 

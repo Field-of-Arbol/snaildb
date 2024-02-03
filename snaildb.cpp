@@ -1,90 +1,46 @@
 // snaildb.cpp
 #include "snaildb.h"
 
+SnailDB::SnailDB() {}
+
 SnailDB::~SnailDB()
 {
     // Delete allocated memory for data
     for (size_t i = 0; i < numRows; ++i)
     {
-        for (size_t j = 0; j < numCols; ++j)
+        for (size_t j = 0; j < colNames.size(); ++j)
         {
             delete data[i][j];
         }
-        delete[] data[i];
+        data[i].clear();
     }
-    delete[] data;
+    // No need for delete[] for the outer vector
+    data.clear(); // Alternatively, you can use data.resize(0) to clear the vector
 }
 
 void SnailDB::addStrColProp(const std::string &colName, size_t max_length)
 {
-    try
-    {
-        data[cursor][colNames.size()] = new StrCol(max_length);
-        colNames.push_back(colName);
-    }
-    catch (const std::exception &e)
-    {
-        throw std::runtime_error(std::string("Error adding StrCol property: ") +
-                                 e.what());
-    }
+    std::cout << "addStrCol: " << colName << " cols:" << colNames.size() << std::endl;
+    colNames.push_back(colName);
+    indexedColumns.push_back(false);
+    columnInfo.push_back({colName, max_length, STR_TYPE});
 }
 
 void SnailDB::addIntColProp(const std::string &colName, size_t max_length)
 {
-    try
-    {
-        data[cursor][colNames.size()] = new IntCol(max_length);
-        colNames.push_back(colName);
-    }
-    catch (const std::exception &e)
-    {
-        throw std::runtime_error(std::string("Error adding IntCol property: ") +
-                                 e.what());
-    }
-}
-
-void SnailDB::addRow(const std::vector<SnailDataType *> &rowData)
-{
-    size_t requiredCols = colNames.size();
-
-    // Increment numRows if adding a new row
-    if (cursor >= numRows)
-    {
-        ++numRows;
-    }
-
-    // Ensure proper initialization of columns for the new row
-    for (size_t i = 0; i < requiredCols; ++i)
-    {
-        ensureColInitialized(colNames[i], numRows);
-    }
-
-    // Add values to the row if provided
-    for (size_t i = 0; i < std::min(rowData.size(), requiredCols); ++i)
-    {
-        size_t colIndex = colIndexMap.at(colNames[i]);
-        if (rowData[i])
-        {
-            if (data[colIndex][cursor])
-            {
-                delete data[colIndex][cursor];
-            }
-            data[colIndex][cursor] = new SnailDataType(*rowData[i]); // Assuming a copy constructor is available
-        }
-        else
-        {
-            data[colIndex][cursor] = nullptr;
-        }
-    }
+    std::cout << "addIntCol: " << colName << " cols:" << colNames.size() << std::endl;
+    colNames.push_back(colName);
+    indexedColumns.push_back(false);
+    columnInfo.push_back({colName, max_length, INT_TYPE});
 }
 
 std::string SnailDB::getRow() const
 {
     std::string result;
-    for (size_t i = 0; i < numCols; ++i)
+    for (size_t i = 0; i < colNames.size(); ++i)
     {
         result += data[cursor][i]->getValue();
-        if (i != numCols - 1)
+        if (i != colNames.size() - 1)
         {
             result += separator;
         }
@@ -94,7 +50,7 @@ std::string SnailDB::getRow() const
 
 SnailDataType *SnailDB::getProp(size_t col) const
 {
-    if (cursor < numRows && col < numCols)
+    if (col < colNames.size())
     {
         return data[cursor][col];
     }
@@ -117,46 +73,52 @@ void SnailDB::previous()
     }
 }
 
-void SnailDB::add()
-{
-    if (cursor < numRows - 1)
-    {
-        ++cursor;
-    }
-    else
-    {
-        // Allocate memory for a new row
-        data[cursor + 1] = new SnailDataType *[numCols];
-        for (size_t i = 0; i < numCols; ++i)
-        {
-            data[cursor + 1][i] = nullptr; // Initialize with nullptr for now
-        }
-        ++numRows;
-    }
-}
-
 void SnailDB::tail() { cursor = numRows - 1; }
 
 size_t SnailDB::getCursor() const { return cursor; }
 
 size_t SnailDB::getSize() const { return numRows; }
 
-void SnailDB::ensureColInitialized(const std::string &colName, size_t requiredRows)
+void SnailDB::ensureColInitialized(const std::string &colName)
 {
-    if (colIndexMap.find(colName) == colIndexMap.end())
+    auto it = colIndexMap.find(colName);
+    if (it == colIndexMap.end())
     {
+        // Column not found, initialize it
         colIndexMap[colName] = colNames.size();
-        colNames.push_back(colName);
-        indexedColumns.push_back(false); // Initialize indexedColumns vector
-
-        // Add a new column (vector of SnailDataType*) to data
-        /*
-        std::vector<SnailDataType*> newColumn;
-        newColumn.reserve(requiredRows);
-        for (size_t i = 0; i < requiredRows; ++i) {
-          newColumn.push_back(nullptr); // Initialize with nullptr for now
-        }
-        data.push_back(newColumn);
-        */
+        data.push_back(std::vector<SnailDataType *>(numRows + 1, nullptr));
     }
+}
+
+void SnailDB::addRow(const std::vector<SnailDataType *> &rowData)
+{
+    if (rowData.size() != colNames.size())
+    {
+        throw std::runtime_error("Number of elements in rowData doesn't match the number of columns.");
+    }
+
+    for (size_t i = 0; i < colNames.size(); ++i)
+    {
+        if (data[cursor][i] == nullptr)
+        {
+            // Ensure column is initialized for the current row
+            ensureColInitialized(columnInfo[i].name);
+
+            // Instantiate SnailDataType based on column type
+            switch (columnInfo[i].type)
+            {
+            case STR_TYPE:
+                data[cursor][i] = new StrCol(columnInfo[i].max_length);
+                break;
+            case INT_TYPE:
+                data[cursor][i] = new IntCol(columnInfo[i].max_length);
+                break;
+            }
+        }
+
+        // Set the value for the current row
+        data[cursor][i]->setValue(rowData[i]->getValue());
+    }
+
+    ++numRows;
 }
