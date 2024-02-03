@@ -4,8 +4,20 @@ SnailDataType::SnailDataType(size_t max_size) : max_size(max_size) {}
 
 SnailDataType::~SnailDataType() {}
 
+void SnailDataType::setValue(const std::string &new_value)
+{
+    if (new_value.length() <= max_size)
+    {
+        strValue = new_value;
+    }
+    else
+    {
+        throw std::runtime_error("Error: Input string exceeds the maximum length.");
+    }
+}
+
 std::string SnailDataType::padStr(const std::string &value,
-                                    size_t maxlength) const
+                                  size_t maxlength) const
 {
 
     if (value.length() >= max_size)
@@ -27,14 +39,7 @@ StrCol::StrCol(size_t max_length) : SnailDataType(max_length) {}
 
 void StrCol::setValue(const std::string &new_string)
 {
-    if (new_string.length() <= max_size)
-    {
-        strValue = new_string;
-    }
-    else
-    {
-        throw std::runtime_error("Error: Input string exceeds the maximum length.");
-    }
+    SnailDataType::setValue(new_string);
 }
 
 IntCol::IntCol(size_t max_length) : SnailDataType(max_length) { setValue(0); }
