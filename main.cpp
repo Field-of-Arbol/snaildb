@@ -21,9 +21,10 @@ int main() {
 
   // 4. Sorted Insert (1, 2, 3) -> Should remain sorted
   std::cout << "Inserting Rows (Sorted)..." << std::endl;
-  db.insert(1, "Alice", "Admin");
-  db.insert(2, "Bob", "User");
-  db.insert(3, "Charlie", "Guest");
+  // insertAt(ts, ...)
+  db.insertAt(100, 1, "Alice", "Admin");
+  db.insertAt(200, 2, "Bob", "User");
+  db.insertAt(300, 3, "Charlie", "Guest");
 
   assert(db.getSize() == 3);
 
@@ -71,6 +72,52 @@ int main() {
   // 10. Memory Cleanup Check (Manual observation via Code Review)
   // SnailDB destructor cleans up unique_ptrs automatically.
 
+  // --- Lifecycle Tests ---
+  std::cout << "Testing Lifecycle..." << std::endl;
+  std::cout << "Initial Active Count: " << db.getSize() << std::endl;
+
+  // Soft Delete 'Zack' (Row 3, TS 400)
+  db.softDelete(3);
+  std::cout << "After Soft Delete (Zack), Count: " << db.getSize()
+            << " (Expected 4)" << std::endl;
+  assert(db.getSize() == 4);
+
+  // Delete Older Than 150 (Aaron TS 50, Alice 100) -> Should delete Aaron and
+  // Alice. Zack is already deleted. Remaining: Bob (200), Charlie (300).
+  db.deleteOlderThan(150);
+  std::cout << "After DeleteOlderThan(150), Count: " << db.getSize()
+            << " (Expected 2)" << std::endl;
+  SnailDumper::printTable(db);
+  assert(db.getSize() == 2);
+
+  // Persistence of Deletions
+  std::cout << "Testing Persistence of Deletions..." << std::endl;
+  if (SnailStorage::save(db, "test.snail")) {
+    std::cout << "Saved to 'test.snail'." << std::endl;
+  }
+
+  SnailDB db2;
+  // setup schema needed? Load usually rebuilds columns but we need to register
+  // types if dynamic. Our Load reimplements schema from file.
+  if (SnailStorage::load(db2, "test.snail")) {
+    std::cout << "Loaded from 'test.snail'. Active Count: " << db2.getSize()
+              << std::endl;
+    assert(db2.getSize() == 2);
+    SnailDumper::printTable(db2);
+  } else {
+    std::cerr << "Load Failed!" << std::endl;
+    return 1;
+  }
+
+  // Physical Purge
+  std::cout << "Testing Physical Purge..." << std::endl;
+  db.purge();
+  std::cout << "Purged! Active Count: " << db.getSize() << std::endl;
+  assert(db.getSize() == 2);
+  SnailDumper::printTable(db);
+
+  std::cout << "Final Lifecycle Verification Passed!" << std::endl;
+
   // 11. Persistence Test
   std::cout << "Testing Persistence (Save/Load)..." << std::endl;
 
@@ -83,7 +130,8 @@ int main() {
   }
 
   // Create new DB to load into
-  SnailDB db2;
+  // SnailDB db2; // db2 already declared and used above for lifecycle
+  // persistence
   if (SnailStorage::load(db2, "test.snail")) {
     std::cout << "Loaded from 'test.snail'." << std::endl;
 
@@ -91,40 +139,27 @@ int main() {
     assert(db2.getSize() == db.getSize());
     assert(db2.getColCount() == db.getColCount());
 
-    // Check row 4 (Aaron)
-    int id = db2.findRow("id", "4"); // Was inserted as 4, Aaron
-    assert(id == 4);
+    // Verify Content (After Purge: Bob(0), Charlie(1))
+    db2.reset();                                 // Cursor 0
+    std::string name0 = db2.get<std::string>(1); // Name Col
 
-    std::string name = db2.get<std::string>(1); // Row 0
-    // Row 0 was Alice. Row 1 is Bob?
-    // db insertion order: 1, 2, 3, 0, 4.
-    // Row 0: id=1, name="Alice"
-    // Row 1: id=2, name="Bob"
-    // db2.get<string>(1) gets row 1 (cursor??)
-    // Wait, SnailDB::get(colIndex) uses CURRENT CURSOR.
-    // We must navigate db2.
-
-    db2.reset(); // Cursor 0
-    // Cursor 0 -> Alice
-    std::string name0 = db2.get<std::string>(1); // Col 1 is name
-    // Alice is padded "     Alice" (10 chars, right aligned? No left padded,
-    // stored as spaces then Str in my optimized impl? Wait, Optimized StrColumn
-    // Add: padLen spaces, then string. Yes. StrColumn::getStr returns
-    // substring.
-
-    // Let's verify specific content.
-
-    // Verify Row 1 (Bob)
-    db2.next(); // Cursor 1
-    std::string name1 = db2.get<std::string>(1);
-    if (name1.find("Bob") == std::string::npos) {
-      std::cerr << "Persistence Data Mismatch: Expected Bob, got '" << name1
+    // Row 0 should be Bob
+    if (name0.find("Bob") == std::string::npos) {
+      std::cerr << "Persistence Mismatch Row 0: Expected Bob, got '" << name0
                 << "'" << std::endl;
       return 1;
     }
 
-    std::cout << "Persistence Verified!" << std::endl;
-    SnailDumper::printTable(db2);
+    // Row 1 should be Charlie
+    db2.next();
+    std::string name1 = db2.get<std::string>(1);
+    if (name1.find("Charlie") == std::string::npos) {
+      std::cerr << "Persistence Mismatch Row 1: Expected Charlie, got '"
+                << name1 << "'" << std::endl;
+      return 1;
+    }
+
+    std::cout << "Persistence Verified! Rows match purged state." << std::endl;
 
   } else {
     std::cerr << "Failed to load!" << std::endl;

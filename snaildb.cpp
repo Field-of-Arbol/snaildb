@@ -1,8 +1,7 @@
-// snaildb.cpp
 #include "snaildb.h"
 #include <algorithm>
-#include <cstdlib> // for std::atoi
-#include <cstring> // for std::memcpy
+#include <cstdlib> // std::atoi
+#include <cstring> // std::memcpy
 
 // =========================================================
 // Hashing Helper (DJB2)
@@ -26,231 +25,209 @@ static uint32_t hashInt(int val) {
 
 // --- InternalIntColumn ---
 
-InternalIntColumn::InternalIntColumn() {}
+class InternalIntColumn : public Column {
+public:
+  InternalIntColumn() {}
 
-ColumnType InternalIntColumn::getType() const { return INT_TYPE; }
-size_t InternalIntColumn::size() const { return storage.size(); }
-void InternalIntColumn::reserve(size_t n) { storage.reserve(n); }
-bool InternalIntColumn::isSorted() const { return sorted; }
-bool InternalIntColumn::isIndexed() const { return !index.empty(); }
+  ColumnType getType() const override { return INT_TYPE; }
+  size_t size() const override { return storage.size(); }
+  void reserve(size_t n) override { storage.reserve(n); }
+  bool isSorted() const override { return sorted; }
+  bool isIndexed() const override { return !index.empty(); }
 
-void InternalIntColumn::addInt(int val) {
-  if (sorted && !storage.empty()) {
-    if (val < storage.back())
-      sorted = false;
-  }
-  storage.push_back(val);
-  if (!index.empty())
+  void compact(const std::vector<bool> &keepMask) override {
+    if (keepMask.size() != storage.size()) return;
+    
+    // Two-Pointer In-Place Compaction
+    size_t dst = 0;
+    for (size_t i = 0; i < storage.size(); ++i) {
+        if (keepMask[i]) {
+            if (dst != i) {
+                storage[dst] = storage[i];
+            }
+            dst++;
+        }
+    }
+    storage.resize(dst);
+    // Index/Sort state is invalidated by compaction unless we re-verify
+    // For v1.0 simplicity, mark as unsorted/unindexed
+    sorted = false;
     index.clear();
-}
-
-int InternalIntColumn::getInt(size_t index) const {
-  if (index >= storage.size())
-    return 0;
-  return storage[index];
-}
-
-void InternalIntColumn::createIndex() {
-  index.clear();
-  index.reserve(storage.size());
-  for (size_t i = 0; i < storage.size(); ++i) {
-    index.push_back({hashInt(storage[i]), (uint16_t)i});
   }
-  std::sort(index.begin(), index.end());
-}
 
-int InternalIntColumn::find(const std::string &pattern) const {
-  int val = std::atoi(pattern.c_str());
-
-  // Strategy 1: Index
-  if (!index.empty()) {
-    uint32_t h = hashInt(val);
-    auto it = std::lower_bound(index.begin(), index.end(), IndexEntry{h, 0});
-    while (it != index.end() && it->hash == h) {
-      if (storage[it->rowIdx] == val)
-        return it->rowIdx;
-      it++;
+  void addInt(int val) override {
+    if (sorted && !storage.empty()) {
+      if (val < storage.back())
+        sorted = false;
     }
-    return -1;
+    storage.push_back(val);
+    if (!index.empty()) index.clear();
   }
 
-  // Strategy 2: Sorted
-  if (sorted) {
-    auto it = std::lower_bound(storage.begin(), storage.end(), val);
-    if (it != storage.end() && *it == val) {
-      return std::distance(storage.begin(), it);
-    }
-    return -1;
+  int getInt(size_t index) const override {
+    if (index >= storage.size()) return 0;
+    return storage[index];
   }
 
-  // Strategy 3: Linear
-  for (size_t i = 0; i < storage.size(); ++i) {
-    if (storage[i] == val)
-      return i;
-  }
-  return -1;
-}
-
-// Persistence handled by SnailStorage friend access
-
-// --- InternalStrColumn (Dictionary Compressed) ---
-
-InternalStrColumn::InternalStrColumn(size_t maxLen) : maxLength(maxLen) {}
-
-ColumnType InternalStrColumn::getType() const { return STR_TYPE; }
-size_t InternalStrColumn::size() const { return data.size(); }
-void InternalStrColumn::reserve(size_t n) { data.reserve(n); }
-bool InternalStrColumn::isSorted() const { return sorted; }
-bool InternalStrColumn::isIndexed() const { return !index.empty(); }
-
-void InternalStrColumn::addStr(const std::string &val) {
-  // 1. Truncate / Pad?
-  // With Dictionary, we store the unique string as-is (padded or unpadded).
-  // Previous logic enforced Left-Padding.
-  // Let's maintain that behavior for consistency and sorting.
-
-  std::string s = val;
-  if (s.length() > maxLength)
-    s = s.substr(0, maxLength);
-
-  // Pad
-  std::string padded = s;
-  if (padded.length() < maxLength) {
-    padded = std::string(maxLength - padded.length(), ' ') + padded;
-  }
-
-  // 2. Dictionary Search
-  // Linear scan of dictionary is O(D) where D is small.
-  // For optimization, we could use a map, but we want to avoid extra memory
-  // overhead. If D is < 100, linear is fast. If D is 65k... maybe slow. But
-  // this is embedded. Let's assume linear is okay or user calls createIndex?
-  // Actually, for insertion speed, a transient map/hash would help, but let's
-  // keep it simple O(D).
-
-  int16_t token = -1;
-  for (size_t i = 0; i < dictionary.size(); ++i) {
-    if (dictionary[i] == padded) {
-      token = (int16_t)i;
-      break;
-    }
-  }
-
-  if (token == -1) {
-    // New Entry
-    if (dictionary.size() >= 65535) {
-      // Error: Dict Full. Fallback to token 0 or do nothing?
-      // For now, fail safe.
-      token = 0;
+  int find(const std::string &pattern) const override {
+    // FIX: Using atoi instead of stoi (No Exceptions)
+    int val = std::atoi(pattern.c_str());
+    
+    if (sorted) {
+        // Binary Search
+        auto it = std::lower_bound(storage.begin(), storage.end(), val);
+        if (it != storage.end() && *it == val) {
+            return (int)std::distance(storage.begin(), it);
+        }
     } else {
-      dictionary.push_back(padded);
-      token = dictionary.size() - 1;
+        // Linear Scan
+        for (size_t i = 0; i < storage.size(); ++i) {
+            if (storage[i] == val) return i;
+        }
     }
+    return -1;
   }
 
-  // 3. Sorting Check
-  if (sorted && !data.empty()) {
-    const std::string &last = dictionary[data.back()];
-    if (padded < last)
+  void createIndex() override {
+    if (storage.empty()) return;
+    index.resize(storage.size());
+    for (size_t i = 0; i < storage.size(); ++i) {
+        index[i] = { hashInt(storage[i]), (uint16_t)i };
+    }
+    std::sort(index.begin(), index.end());
+  }
+
+  // Friends for Persistence
+  friend class SnailStorage;
+
+protected:
+    char* getWritableBuffer() override { return reinterpret_cast<char*>(storage.data()); }
+    void resizeStorage(size_t bytes) override { 
+        size_t count = bytes / sizeof(int);
+        storage.resize(count);
+        sorted = false; 
+        index.clear();
+    }
+
+private:
+  std::vector<int> storage;
+  std::vector<IndexEntry> index;
+  bool sorted = true;
+};
+
+// --- InternalStrColumn ---
+
+class InternalStrColumn : public Column {
+public:
+  InternalStrColumn(size_t maxLen) : maxLength(maxLen) {}
+
+  ColumnType getType() const override { return STR_TYPE; }
+  
+  // Size is strictly rows, not bytes
+  size_t size() const override { return data.size(); }
+  
+  void reserve(size_t n) override { data.reserve(n); }
+  bool isSorted() const override { return sorted; }
+  bool isIndexed() const override { return !index.empty(); }
+
+  void compact(const std::vector<bool> &keepMask) override {
+      if (keepMask.size() != data.size()) return;
+
+      size_t dst = 0;
+      for (size_t i = 0; i < data.size(); ++i) {
+          if (keepMask[i]) {
+              if (dst != i) {
+                  data[dst] = data[i];
+              }
+              dst++;
+          }
+      }
+      data.resize(dst);
       sorted = false;
+      index.clear();
+      // Note: Dictionary is NOT compacted in v1.0 (Append-only dict)
   }
 
-  // 4. Store Token
-  data.push_back((uint16_t)token);
+  void addStr(const std::string &val) override {
+      uint16_t token = 0;
+      // 1. Try to find in existing dictionary
+      int existingIdx = -1;
+      // Simple linear search on dictionary is slow, but dict is small.
+      // Optimization: Could use a map, but RAM usage... keeping simple for v1.0
+      for(size_t i=0; i<dictionary.size(); ++i) {
+          if(dictionary[i] == val) {
+              existingIdx = i;
+              break;
+          }
+      }
 
-  // 5. Invalidate Index
-  if (!index.empty())
-    index.clear();
-}
+      if (existingIdx != -1) {
+          token = (uint16_t)existingIdx;
+      } else {
+          // Add new
+          if (dictionary.size() < 65535) {
+            dictionary.push_back(val);
+            token = (uint16_t)(dictionary.size() - 1);
+          } else {
+            token = 0; // Overflow fallback
+          }
+      }
+      data.push_back(token);
+      sorted = false; 
+      if(!index.empty()) index.clear();
+  }
 
-std::string InternalStrColumn::getStr(size_t index) const {
-  if (index >= data.size())
+  std::string getStr(size_t index) const override {
+    if (index >= data.size()) return "";
+    uint16_t token = data[index];
+    if (token < dictionary.size()) {
+        return dictionary[token];
+    }
     return "";
-  uint16_t token = data[index];
-  if (token >= dictionary.size())
-    return ""; // Error
-  return dictionary[token];
-}
-
-void InternalStrColumn::createIndex() {
-  index.clear();
-  index.reserve(data.size());
-  for (size_t i = 0; i < data.size(); ++i) {
-    // Hash the ACTUAL string value
-    const std::string &val = dictionary[data[i]];
-    // Note: hashing padded string
-    uint32_t h = hashStr(val.c_str(), val.length());
-    index.push_back({h, (uint16_t)i});
-  }
-  std::sort(index.begin(), index.end());
-}
-
-int InternalStrColumn::find(const std::string &pattern) const {
-  // 1. Pad pattern
-  std::string searchPat = pattern;
-  if (searchPat.length() < maxLength) {
-    searchPat = std::string(maxLength - searchPat.length(), ' ') + searchPat;
-  } else if (searchPat.length() > maxLength) {
-    searchPat = searchPat.substr(0, maxLength);
   }
 
-  // OPTIMIZATION: Check if valid token exists first!
-  int16_t token = -1;
-  for (size_t i = 0; i < dictionary.size(); ++i) {
-    if (dictionary[i] == searchPat) {
-      token = (int16_t)i;
-      break;
+  int find(const std::string &pattern) const override {
+      // 1. Find token for pattern
+      int targetToken = -1;
+      for(size_t i=0; i<dictionary.size(); ++i) {
+          if(dictionary[i] == pattern) {
+              targetToken = i;
+              break;
+          }
+      }
+      
+      // Fast Fail: Token not in dict? Value not in DB.
+      if (targetToken == -1) return -1;
+
+      // 2. Find token in data
+      for (size_t i = 0; i < data.size(); ++i) {
+          if (data[i] == targetToken) return i;
+      }
+      return -1;
+  }
+
+  void createIndex() override {
+      // Not implemented for v1.0 Str (Dictionary is already an index of sorts)
+  }
+  
+  // Friends for Persistence
+  friend class SnailStorage;
+
+protected:
+    char* getWritableBuffer() override { return reinterpret_cast<char*>(data.data()); }
+    void resizeStorage(size_t bytes) override {
+        size_t count = bytes / sizeof(uint16_t);
+        data.resize(count);
+        sorted = false;
     }
-  }
-  if (token == -1)
-    return -1; // Fast Fail: String not in DB.
 
-  // If found, now we search for 'token' in 'data'.
-
-  // Strategy 1: Index (Hash of string)
-  // If index exists, it maps Hash(String) -> RowIdx.
-  if (!index.empty()) {
-    uint32_t h = hashStr(searchPat.c_str(), searchPat.length());
-    auto it = std::lower_bound(index.begin(), index.end(), IndexEntry{h, 0});
-    while (it != index.end() && it->hash == h) {
-      // Resolve row -> token -> string
-      if (data[it->rowIdx] == token)
-        return it->rowIdx;
-      it++;
-    }
-    return -1;
-  }
-
-  // Strategy 2: Sorted (Token comparison?)
-  // Warning: 'sorted' means the strings are sorted, NOT the tokens.
-  // e.g. Dict: ["Apple"(0), "Banana"(1)]. Data: [0, 1]. Sorted.
-  // e.g. Dict: ["Banana"(0), "Apple"(1)]. Data: [1, 0]. Sorted Strings, but
-  // Tokens unsorted. So we can ONLY use binary search on 'data' if we assume
-  // logic... We can use std::lower_bound with a custom comparator that looks up
-  // dict!
-  if (sorted) {
-    // lower_bound on data, comparing looked-up strings
-    // Value to find: searchPat
-    auto it = std::lower_bound(data.begin(), data.end(), searchPat,
-                               [this](uint16_t t, const std::string &val) {
-                                 return this->dictionary[t] < val;
-                               });
-
-    if (it != data.end() && dictionary[*it] == searchPat) {
-      return std::distance(data.begin(), it);
-    }
-    return -1;
-  }
-
-  // Strategy 3: Linear Scan on Tokens (Fast integer compare)
-  for (size_t i = 0; i < data.size(); ++i) {
-    if (data[i] == token)
-      return i;
-  }
-
-  return -1;
-}
-
-// Persistence handled by SnailStorage friend access
+private:
+  size_t maxLength;
+  std::vector<std::string> dictionary;
+  std::vector<uint16_t> data; // Tokens
+  std::vector<IndexEntry> index;
+  bool sorted = false; // Strings rarely inserted sorted
+};
 
 // =========================================================
 // SnailDB Implementation
@@ -258,7 +235,7 @@ int InternalStrColumn::find(const std::string &pattern) const {
 
 SnailDB::SnailDB() : numRows(0), cursor(0) {}
 
-SnailDB::~SnailDB() { columns.clear(); }
+SnailDB::~SnailDB() {}
 
 void SnailDB::addStrColProp(const std::string &colName, size_t max_length) {
   colNames.push_back(colName);
@@ -276,6 +253,8 @@ void SnailDB::reserve(size_t rows) {
   for (auto &col : columns) {
     col->reserve(rows);
   }
+  activeRows.reserve(rows);
+  timestamps.reserve(rows);
 }
 
 void SnailDB::createIndex() {
@@ -286,14 +265,12 @@ void SnailDB::createIndex() {
 
 // Typed Dispatch
 void SnailDB::addToCol(size_t colIdx, int val) {
-  if (colIdx >= columns.size())
-    return;
+  if (colIdx >= columns.size()) return;
   columns[colIdx]->addInt(val);
 }
 
 void SnailDB::addToCol(size_t colIdx, const std::string &val) {
-  if (colIdx >= columns.size())
-    return;
+  if (colIdx >= columns.size()) return;
   columns[colIdx]->addStr(val);
 }
 
@@ -301,41 +278,104 @@ void SnailDB::addToCol(size_t colIdx, const char *val) {
   addToCol(colIdx, std::string(val));
 }
 
+// Lifecycle Management
+void SnailDB::softDelete(size_t index) {
+    if (index < activeRows.size()) {
+        activeRows[index] = false;
+    }
+}
+
+void SnailDB::deleteOlderThan(uint32_t threshold) {
+    for(size_t i=0; i<timestamps.size(); ++i) {
+        if (timestamps[i] < threshold) {
+            activeRows[i] = false;
+        }
+    }
+}
+
+void SnailDB::purge() {
+    if (activeRows.empty()) return;
+
+    // 1. Compact all columns
+    for (auto &col : columns) {
+        col->compact(activeRows);
+    }
+
+    // 2. Compact timestamps
+    size_t dst = 0;
+    for (size_t i = 0; i < timestamps.size(); ++i) {
+        if (activeRows[i]) {
+            if (dst != i) timestamps[dst] = timestamps[i];
+            dst++;
+        }
+    }
+    timestamps.resize(dst);
+
+    // 3. Reset Active Mask
+    numRows = dst;
+    activeRows.assign(numRows, true);
+    if (cursor >= numRows && numRows > 0) cursor = numRows - 1;
+}
+
+
 // Navigation
 void SnailDB::next() {
-  if (cursor < numRows - 1)
+  if (cursor < numRows) cursor++;
+  while (cursor < numRows && !activeRows[cursor]) {
     cursor++;
+  }
+  if (cursor >= numRows && numRows > 0) tail();
 }
+
 void SnailDB::previous() {
-  if (cursor > 0)
+  if (cursor > 0) cursor--;
+  while (cursor > 0 && !activeRows[cursor]) {
     cursor--;
+  }
 }
+
 void SnailDB::tail() {
-  if (numRows > 0)
-    cursor = numRows - 1;
+  if (numRows == 0) { cursor = 0; return; }
+  cursor = numRows - 1;
+  while (cursor > 0 && !activeRows[cursor]) {
+    cursor--;
+  }
 }
-void SnailDB::reset() { cursor = 0; }
+
+void SnailDB::reset() {
+  cursor = 0;
+  if (numRows > 0 && !activeRows[cursor]) next();
+}
+
 size_t SnailDB::getCursor() const { return cursor; }
-size_t SnailDB::getSize() const { return numRows; }
+
+size_t SnailDB::getSize() const {
+    // Return ACTIVE count
+    size_t count = 0;
+    for(bool b : activeRows) if(b) count++;
+    return count;
+}
 
 int SnailDB::getColIndex(const std::string &name) const {
   for (size_t i = 0; i < colNames.size(); ++i) {
-    if (colNames[i] == name)
-      return i;
+    if (colNames[i] == name) return i;
   }
   return -1;
 }
 
 ColumnType SnailDB::getColType(size_t idx) const {
-  if (idx >= columns.size())
-    return (ColumnType)-1;
-  return columns[idx]->getType();
+    if (idx < colInfos.size()) return colInfos[idx].type;
+    return INT_TYPE; // default
 }
 
-int SnailDB::findRow(const std::string &colName,
-                     const std::string &value) const {
-  int colIdx = getColIndex(colName);
-  if (colIdx == -1)
-    return -1;
-  return columns[colIdx]->find(value);
+int SnailDB::findRow(const std::string &colName, const std::string &value) const {
+  int idx = getColIndex(colName);
+  if (idx == -1) return -1;
+  int foundIdx = columns[idx]->find(value);
+  
+  // Verify if valid
+  if (foundIdx != -1 && foundIdx < (int)activeRows.size() && !activeRows[foundIdx]) {
+      return -1; // Found but deleted
+  }
+  return foundIdx;
 }

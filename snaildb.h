@@ -45,6 +45,9 @@ public:
   virtual bool isIndexed() const = 0;
   virtual void createIndex() = 0;
 
+  // Lifecycle (v1.0)
+  virtual void compact(const std::vector<bool> &keepMask) = 0;
+
   // Typed Accessors
   virtual void addInt(int val) {}
   virtual void addStr(const std::string &val) {}
@@ -69,6 +72,7 @@ public:
   void reserve(size_t n) override;
   bool isSorted() const override;
   bool isIndexed() const override;
+  void compact(const std::vector<bool> &keepMask) override;
   void addInt(int val) override;
   int getInt(size_t index) const override;
   void createIndex() override;
@@ -90,6 +94,7 @@ public:
   void reserve(size_t n) override;
   bool isSorted() const override;
   bool isIndexed() const override;
+  void compact(const std::vector<bool> &keepMask) override;
   void addStr(const std::string &val) override;
   std::string getStr(size_t index) const override;
   void createIndex() override;
@@ -122,15 +127,27 @@ public:
 
   // Variadic Insert
   template <typename... Args> void insert(Args... args) {
-    if (sizeof...(args) != colNames.size()) {
-      return; // Error: Mismatch (Silently fail or log in debug)
-    }
+    insertAt(0, args...); // Default TS = 0
+  }
+
+  template <typename... Args> void insertAt(uint32_t ts, Args... args) {
+    if (sizeof...(args) != colNames.size())
+      return;
     insertImpl(0, args...);
+    // System fields
+    activeRows.push_back(true);
+    timestamps.push_back(ts);
     numRows++;
   }
 
   // Typed Data Access
   template <typename T> T get(size_t colIndex) const;
+
+  // Lifecycle (v1.0)
+  void softDelete(size_t index);
+  void deleteOlderThan(uint32_t threshold);
+  void purge();
+  bool isActive(size_t index) const;
 
   // Navigation
   void next();
@@ -138,7 +155,7 @@ public:
   void tail();
   void reset();
   size_t getCursor() const;
-  size_t getSize() const;
+  size_t getSize() const; // Returns ACTIVE count
 
   // Metadata Access for Dumper
   size_t getColCount() const { return colNames.size(); }
@@ -152,6 +169,10 @@ protected:
   std::vector<std::unique_ptr<Column>> columns;
   std::vector<std::string> colNames;
   std::vector<ColumnInfo> colInfos;
+
+  // System Vectors (v1.0)
+  std::vector<bool> activeRows;
+  std::vector<uint32_t> timestamps;
 
   size_t numRows;
   size_t cursor;
