@@ -38,24 +38,34 @@ public:
       file.write((const char *)&nameLen, sizeof(nameLen));
       file.write(info.name.c_str(), nameLen);
     }
-
     // 4. Data Blocks
     for (size_t i = 0; i < numCols; ++i) {
-      const Column *col = db.columns[i].get();
-      size_t size = col->getByteSize();
-      const char *data = col->getRawData();
+      Column *col = db.columns[i].get();
 
-      // Write block size first (safety) or imply from Row*Len?
-      // Better to write raw dump. We can calc size from Metadata on load.
-      // But writing size provides sanity check. Let's write raw only to be
-      // compact. LOAD logic:
-      //   IntCol size = numRows * 4
-      //   StrCol size = numRows * maxLen
-      // So we don't strictly need to write size, but let's do it for
-      // validation. Actually, requirements said "compact". Implicit size is
-      // most compact. We trust numRows * Config.
+      if (col->getType() == INT_TYPE) {
+        // IntColumn: Dump Storage
+        InternalIntColumn *intCol = static_cast<InternalIntColumn *>(col);
+        size_t size = intCol->storage.size() * sizeof(int);
+        file.write((const char *)intCol->storage.data(), size);
+      } else {
+        // StrColumn: Dump Dictionary + Data
+        InternalStrColumn *strCol = static_cast<InternalStrColumn *>(col);
 
-      file.write(data, size);
+        // 1. Dict Size
+        uint16_t dictSize = (uint16_t)strCol->dictionary.size();
+        file.write((const char *)&dictSize, sizeof(dictSize));
+
+        // 2. Dict Items
+        for (const auto &s : strCol->dictionary) {
+          uint16_t len = (uint16_t)s.length();
+          file.write((const char *)&len, sizeof(len));
+          file.write(s.data(), len);
+        }
+
+        // 3. Data Vector (Tokens)
+        size_t size = strCol->data.size() * sizeof(uint16_t);
+        file.write((const char *)strCol->data.data(), size);
+      }
     }
 
     file.close();
@@ -109,32 +119,60 @@ public:
 
     for (uint32_t i = 0; i < numCols; ++i) {
       Column *col = db.columns[i].get();
-      size_t byteSize = 0;
 
       if (col->getType() == INT_TYPE) {
-        byteSize = numRows * sizeof(int);
-      } else {
-        // Str Type
-        byteSize = numRows * db.colInfos[i].max_length;
-      }
+        // IntColumn: Simple Dump
+        InternalIntColumn *intCol = static_cast<InternalIntColumn *>(col);
+        size_t byteSize = numRows * sizeof(int);
 
-      // Zero-Copy Load
-      // 1. Resize Column Storage directly
-      col->resizeStorage(byteSize);
+        // Zero-Copy Check
+        // We can't use generic resizeStorage anymore, must use spec method
+        // But IntCol is a friend. Access private storage directly?
+        // Yes, SnailStorage is friend of InternalIntColumn.
 
-      // 2. Read directly into Column's memory
-      if (byteSize > 0) {
-        file.read(col->getWritableBuffer(), byteSize);
-        if (!file) {
-          // Truncated file or error
-          return false;
+        intCol->storage.resize(numRows);
+        if (byteSize > 0) {
+          file.read((char *)intCol->storage.data(), byteSize);
         }
+        intCol->sorted = false; // Reset safe
+        intCol->index.clear();
+
+      } else {
+        // StrColumn: Dictionary Format
+        // 1. Read Dict Size (uint16_t)
+        InternalStrColumn *strCol = static_cast<InternalStrColumn *>(col);
+        uint16_t dictSize = 0;
+        file.read((char *)&dictSize, sizeof(dictSize));
+
+        // 2. Read Dictionary
+        strCol->dictionary.resize(dictSize);
+        for (int k = 0; k < dictSize; ++k) {
+          // Read Len + Bytes
+          uint16_t strLen = 0; // Padded len should be maxLength?
+          // To be safe/dynamic, let's read length.
+          // Implementation choice: Did we write length or fixed?
+          // Save logic: "Loop dictionary: Write string length + string bytes"
+          // Yes, explicit length.
+          file.read((char *)&strLen, sizeof(strLen));
+
+          std::string s(strLen, '\0');
+          file.read(&s[0], strLen);
+          strCol->dictionary[k] = s;
+        }
+
+        // 3. Read Data Vector (uint16_t tokens)
+        size_t dataSize = numRows * sizeof(uint16_t);
+        strCol->data.resize(numRows);
+        if (dataSize > 0) {
+          file.read((char *)strCol->data.data(), dataSize);
+        }
+
+        strCol->sorted = false;
+        strCol->index.clear();
       }
 
-      // Note: resizeStorage marks sorted=false by default for safety.
-      // If we wanted to restore sorted state, we'd need to check it here or
-      // save it in metadata. For v0.8 simplicity, loading raw marks unsorted.
-      // User can manually check or we improve later.
+      if (!file)
+        return false;
     }
 
     // Implicitly we might want to rebuild indices here or let user do it.

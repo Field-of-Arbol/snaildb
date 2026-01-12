@@ -35,35 +35,73 @@ public:
   virtual size_t size() const = 0;
   virtual void reserve(size_t n) = 0;
 
-  // Optimization Flags
+  // Persistence (Raw Data Access) - REMOVED in v0.9 for Type-Aware Storage
+  // virtual const char *getRawData() const = 0;
+  // virtual size_t getByteSize() const = 0;
+  // virtual void setRawData(const char *data, size_t size) = 0;
+
+  // Helpers
   virtual bool isSorted() const = 0;
   virtual bool isIndexed() const = 0;
-
-  // Actions
   virtual void createIndex() = 0;
 
-  // Typed Accessors (No Exceptions - Return Success/Fail or Default)
-  // For simplicity in this embedded ctx, mismatched calls do nothing or return
-  // default.
+  // Typed Accessors
   virtual void addInt(int val) {}
   virtual void addStr(const std::string &val) {}
-
   virtual int getInt(size_t index) const { return 0; }
   virtual std::string getStr(size_t index) const { return ""; }
 
-  // Search (Generic)
+  // Search
   virtual int find(const std::string &pattern) const = 0;
+};
 
-  // Persistence (Raw Data Access)
-  virtual const char *getRawData() const = 0;
-  virtual size_t getByteSize() const = 0;
-  virtual void setRawData(const char *data, size_t size) = 0;
+// =========================================================
+// Internal Column Definitions (Exposed for SnailStorage)
+// =========================================================
 
-protected:
+class InternalIntColumn : public Column {
   friend class SnailStorage;
-  // Zero-Copy Write Interface
-  virtual char *getWritableBuffer() = 0;
-  virtual void resizeStorage(size_t byteSize) = 0;
+
+public:
+  InternalIntColumn();
+  ColumnType getType() const override;
+  size_t size() const override;
+  void reserve(size_t n) override;
+  bool isSorted() const override;
+  bool isIndexed() const override;
+  void addInt(int val) override;
+  int getInt(size_t index) const override;
+  void createIndex() override;
+  int find(const std::string &pattern) const override;
+
+private:
+  std::vector<int> storage;
+  std::vector<IndexEntry> index;
+  bool sorted = true;
+};
+
+class InternalStrColumn : public Column {
+  friend class SnailStorage;
+
+public:
+  InternalStrColumn(size_t maxLen);
+  ColumnType getType() const override;
+  size_t size() const override;
+  void reserve(size_t n) override;
+  bool isSorted() const override;
+  bool isIndexed() const override;
+  void addStr(const std::string &val) override;
+  std::string getStr(size_t index) const override;
+  void createIndex() override;
+  int find(const std::string &pattern) const override;
+
+private:
+  size_t maxLength;
+  // v0.9 Dictionary Compression
+  std::vector<std::string> dictionary; // Unique strings
+  std::vector<uint16_t> data;          // Token indices
+  std::vector<IndexEntry> index;
+  bool sorted = true;
 };
 
 // SnailDB Main Class

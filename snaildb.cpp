@@ -24,343 +24,233 @@ static uint32_t hashInt(int val) {
 // Internal Column Implementations
 // =========================================================
 
-// Internal Integer Column
-class InternalIntColumn : public Column {
-public:
-  InternalIntColumn() {}
+// --- InternalIntColumn ---
 
-  ColumnType getType() const override { return INT_TYPE; }
-  size_t size() const override { return storage.size(); }
-  void reserve(size_t n) override { storage.reserve(n); }
+InternalIntColumn::InternalIntColumn() {}
 
-  bool isSorted() const override { return sorted; }
-  bool isIndexed() const override { return !index.empty(); }
+ColumnType InternalIntColumn::getType() const { return INT_TYPE; }
+size_t InternalIntColumn::size() const { return storage.size(); }
+void InternalIntColumn::reserve(size_t n) { storage.reserve(n); }
+bool InternalIntColumn::isSorted() const { return sorted; }
+bool InternalIntColumn::isIndexed() const { return !index.empty(); }
 
-  void addInt(int val) override {
-    // Check sorted state
-    if (sorted && !storage.empty()) {
-      if (val < storage.back())
-        sorted = false;
-    }
-    storage.push_back(val);
-    // Note: Adding invalidates index if we maintain it live.
-    // For simple embedded DB, we usually rebuild index or append.
-    // Here, we invalidate index on add for simplicity.
-    if (!index.empty())
-      index.clear();
+void InternalIntColumn::addInt(int val) {
+  if (sorted && !storage.empty()) {
+    if (val < storage.back())
+      sorted = false;
   }
-
-  int getInt(size_t index) const override {
-    if (index >= storage.size())
-      return 0;
-    return storage[index];
-  }
-
-  void createIndex() override {
-    // Build index vector
+  storage.push_back(val);
+  if (!index.empty())
     index.clear();
-    index.reserve(storage.size());
-    for (size_t i = 0; i < storage.size(); ++i) {
-      index.push_back({hashInt(storage[i]), (uint16_t)i});
-    }
-    // Sort by hash for binary search
-    std::sort(index.begin(), index.end());
+}
+
+int InternalIntColumn::getInt(size_t index) const {
+  if (index >= storage.size())
+    return 0;
+  return storage[index];
+}
+
+void InternalIntColumn::createIndex() {
+  index.clear();
+  index.reserve(storage.size());
+  for (size_t i = 0; i < storage.size(); ++i) {
+    index.push_back({hashInt(storage[i]), (uint16_t)i});
   }
+  std::sort(index.begin(), index.end());
+}
 
-  int find(const std::string &pattern) const override {
-    // Safety Fix: No exceptions
-    // Use atoi/atol. If pattern is not a number, it return 0.
-    // Ideally we check isdigit, but for embedded speed/size, atoi is standard
-    // fallback. If strict validation is needed, we would walk the string.
-    int val = std::atoi(pattern.c_str());
+int InternalIntColumn::find(const std::string &pattern) const {
+  int val = std::atoi(pattern.c_str());
 
-    // Strategy 1: Index Search (Hash)
-    if (!index.empty()) {
-      uint32_t h = hashInt(val);
-      // Binary search in index
-      auto it = std::lower_bound(index.begin(), index.end(), IndexEntry{h, 0});
-      // Check for collisions loop
-      while (it != index.end() && it->hash == h) {
-        if (storage[it->rowIdx] == val)
-          return it->rowIdx;
-        it++;
-      }
-      return -1; // Not found in index
-    }
-
-    // Strategy 2: Sorted Search (Binary Search on Data)
-    if (sorted) {
-      auto it = std::lower_bound(storage.begin(), storage.end(), val);
-      if (it != storage.end() && *it == val) {
-        return std::distance(storage.begin(), it);
-      }
-      return -1;
-    }
-
-    // Strategy 3: Linear Scan
-    for (size_t i = 0; i < storage.size(); ++i) {
-      if (storage[i] == val)
-        return i;
+  // Strategy 1: Index
+  if (!index.empty()) {
+    uint32_t h = hashInt(val);
+    auto it = std::lower_bound(index.begin(), index.end(), IndexEntry{h, 0});
+    while (it != index.end() && it->hash == h) {
+      if (storage[it->rowIdx] == val)
+        return it->rowIdx;
+      it++;
     }
     return -1;
   }
 
-  // Persistence
-  const char *getRawData() const override {
-    return reinterpret_cast<const char *>(storage.data());
-  }
-  size_t getByteSize() const override { return storage.size() * sizeof(int); }
-  void setRawData(const char *data, size_t size) override {
-    resizeStorage(size);
-    std::memcpy(getWritableBuffer(), data, size);
-    // Re-verify Sorting? (resizeStorage sets sorted=false currently for safety,
-    // or we verify later) For now, assume setRawData/load implies we need to
-    // check sort or set to false. The implementation below sets sorted=false.
-  }
-
-protected:
-  char *getWritableBuffer() override {
-    return reinterpret_cast<char *>(storage.data());
-  }
-  void resizeStorage(size_t byteSize) override {
-    size_t count = byteSize / sizeof(int);
-    storage.resize(count);
-    index.clear();
-    // We don't know the nature of incoming data yet.
-    // Mark unsorted for safety? Or check later?
-    // SnailStorage::load might assume default, or check.
-    // Let's reset smart flags.
-    sorted = false;
-  }
-
-private:
-  std::vector<int> storage;
-  std::vector<IndexEntry> index;
-  bool sorted = true;
-};
-
-// Internal String Column
-class InternalStrColumn : public Column {
-public:
-  InternalStrColumn(size_t maxLen) : maxLength(maxLen) {}
-
-  ColumnType getType() const override { return STR_TYPE; }
-  size_t size() const override {
-    return maxLength == 0 ? 0 : storage.size() / maxLength;
-  }
-  void reserve(size_t n) override { storage.reserve(n * maxLength); }
-
-  bool isSorted() const override { return sorted; }
-  bool isIndexed() const override { return !index.empty(); }
-
-  void addStr(const std::string &val) override {
-    // Optimization: Zero-Copy Logic where possible
-
-    // 1. Calculate effective length (Truncate)
-    size_t len = val.length();
-    if (len > maxLength)
-      len = maxLength;
-
-    // 2. Sorting Check (Compare new vs last)
-    // We need to construct the would-be padded string virtually to compare.
-    // Or just compare bytes.
-    // Left Padding -> spaces then string.
-    // If we sort, we must compare the full padded representation.
-    if (sorted && size() > 0) {
-      // Retrieve last row efficiently
-      // getStr creates a string, which is a copy, but safe for logic reuse.
-      // To be purely optimal we would scan storage directly, but getStr is
-      // reliable.
-      std::string last = getStr(size() - 1);
-
-      // Construct padded temp only if necessary for comparison
-      // (Actually, comparing unpadded 'val' vs padded 'last' is tricky
-      // manually) Let's perform the copy for the check logic to remain robust,
-      // as the sorting check is less frequent/critical than the insertion bulk.
-      // BUT, user asked for optimization.
-
-      // Let's prioritize correct sorting check without full string alloc if
-      // possible. Or just accept one alloc here. Wait, for strict optimization,
-      // we want to write directly to storage logic first.
-    }
-
-    // For now, let's keep the sorted logic simple (it might alloc),
-    // but optimize the STORAGE WRITE to not alloc intermediate strings.
-
-    // Check Sorted (Simplified Logic)
-    // To strictly avoid allocs would require complex iterator logic.
-    // Let's alloc JUST for the check if sorted.
-    if (sorted && size() > 0) {
-      std::string last = getStr(size() - 1);
-      // We need to compare "    val" vs "last"
-      // It's hard to do without constructing "    val".
-      std::string paddedVal =
-          std::string(maxLength - len, ' ') + val.substr(0, len);
-      if (paddedVal < last)
-        sorted = false;
-    }
-
-    // 3. Write to Storage (No intermediate allocs for the massive vector)
-    size_t currentEnd = storage.size();
-    storage.resize(currentEnd + maxLength); // allocate raw chars
-
-    // Fill Pad (Left Padding)
-    size_t padLen = maxLength - len;
-    // std::fill isn't needed if we loop, but explicit loop is fine.
-    for (size_t i = 0; i < padLen; ++i) {
-      storage[currentEnd + i] = ' ';
-    }
-
-    // Fill String
-    for (size_t i = 0; i < len; ++i) {
-      storage[currentEnd + padLen + i] = val[i];
-    }
-
-    // Invalidate Index
-    if (!index.empty())
-      index.clear();
-  }
-
-  std::string getStr(size_t index) const override {
-    size_t offset = index * maxLength;
-    if (offset >= storage.size())
-      return "";
-    return std::string(storage.begin() + offset,
-                       storage.begin() + offset + maxLength);
-  }
-
-  void createIndex() override {
-    index.clear();
-    size_t rows = size();
-    index.reserve(rows);
-    for (size_t i = 0; i < rows; ++i) {
-      // Hash specific slice
-      size_t offset = i * maxLength;
-      uint32_t h = hashStr(&storage[offset], maxLength);
-      index.push_back({h, (uint16_t)i});
-    }
-    std::sort(index.begin(), index.end());
-  }
-
-  int find(const std::string &pattern) const override {
-    // Pad search pattern to match storage
-    std::string searchPat = pattern;
-    if (searchPat.length() < maxLength) {
-      searchPat = std::string(maxLength - searchPat.length(), ' ') + searchPat;
-    } else if (searchPat.length() > maxLength) {
-      searchPat = searchPat.substr(0, maxLength);
-    }
-
-    // Strategy 1: Index Search
-    if (!index.empty()) {
-      uint32_t h = hashStr(searchPat.c_str(), maxLength);
-      auto it = std::lower_bound(index.begin(), index.end(), IndexEntry{h, 0});
-      while (it != index.end() && it->hash == h) {
-        // Collision check
-        size_t offset = it->rowIdx * maxLength;
-        bool match = true;
-        for (size_t k = 0; k < maxLength; ++k) {
-          if (storage[offset + k] != searchPat[k]) {
-            match = false;
-            break;
-          }
-        }
-        if (match)
-          return it->rowIdx;
-        it++;
-      }
-      return -1;
-    }
-
-    // Strategy 2: Sorted Search
-    // Caveat: We are storing flattened vector. std::lower_bound logic is
-    // complex here. We need a custom iterator or comparator that accesses the
-    // flat vector. Implementing strict Binary Search manually for flat vector
-    // is easier.
-    if (sorted) {
-      int left = 0, right = size() - 1;
-      while (left <= right) {
-        int mid = left + (right - left) / 2;
-        std::string midVal = getStr(mid);
-        if (midVal == searchPat)
-          return mid;
-        if (midVal < searchPat)
-          left = mid + 1;
-        else
-          right = mid - 1;
-      }
-      return -1;
-    }
-
-    // Strategy 3: Linear Scan
-    size_t rows = size();
-    for (size_t i = 0; i < rows; ++i) {
-      size_t offset = i * maxLength;
-      bool match = true;
-      for (size_t k = 0; k < maxLength; ++k) {
-        if (storage[offset + k] != searchPat[k]) {
-          match = false;
-          break;
-        }
-      }
-      if (match)
-        return i;
+  // Strategy 2: Sorted
+  if (sorted) {
+    auto it = std::lower_bound(storage.begin(), storage.end(), val);
+    if (it != storage.end() && *it == val) {
+      return std::distance(storage.begin(), it);
     }
     return -1;
   }
 
-  // Persistence
-  const char *getRawData() const override { return storage.data(); }
-  size_t getByteSize() const override { return storage.size(); }
-  void setRawData(const char *data, size_t size) override {
-    resizeStorage(size);
-    std::memcpy(getWritableBuffer(), data, size);
+  // Strategy 3: Linear
+  for (size_t i = 0; i < storage.size(); ++i) {
+    if (storage[i] == val)
+      return i;
+  }
+  return -1;
+}
 
-    // Check Sorted State (Lazy check or full scan?)
-    // We essentially just overwrote all data.
-    // Let's rely on SnailStorage or manual verify.
-    // But for setRawData compatibility, let's keep the existing check logic if
-    // possible, or just default to sorted=false. The previous implementation
-    // tried to check. Let's copy the check logic here because setRawData is
-    // also used by... nobody else right now. But resizeStorage resets
-    // sorted=false.
+// Persistence handled by SnailStorage friend access
 
-    sorted = true;
-    size_t count = size / maxLength;
-    if (count >= 2) {
-      for (size_t i = 1; i < count; ++i) {
-        size_t offsetA = (i - 1) * maxLength;
-        size_t offsetB = i * maxLength;
-        for (size_t k = 0; k < maxLength; ++k) {
-          char a = storage[offsetA + k];
-          char b = storage[offsetB + k];
-          if (b < a) {
-            sorted = false;
-            break;
-          }
-          if (b > a)
-            break;
-        }
-        if (!sorted)
-          break;
-      }
+// --- InternalStrColumn (Dictionary Compressed) ---
+
+InternalStrColumn::InternalStrColumn(size_t maxLen) : maxLength(maxLen) {}
+
+ColumnType InternalStrColumn::getType() const { return STR_TYPE; }
+size_t InternalStrColumn::size() const { return data.size(); }
+void InternalStrColumn::reserve(size_t n) { data.reserve(n); }
+bool InternalStrColumn::isSorted() const { return sorted; }
+bool InternalStrColumn::isIndexed() const { return !index.empty(); }
+
+void InternalStrColumn::addStr(const std::string &val) {
+  // 1. Truncate / Pad?
+  // With Dictionary, we store the unique string as-is (padded or unpadded).
+  // Previous logic enforced Left-Padding.
+  // Let's maintain that behavior for consistency and sorting.
+
+  std::string s = val;
+  if (s.length() > maxLength)
+    s = s.substr(0, maxLength);
+
+  // Pad
+  std::string padded = s;
+  if (padded.length() < maxLength) {
+    padded = std::string(maxLength - padded.length(), ' ') + padded;
+  }
+
+  // 2. Dictionary Search
+  // Linear scan of dictionary is O(D) where D is small.
+  // For optimization, we could use a map, but we want to avoid extra memory
+  // overhead. If D is < 100, linear is fast. If D is 65k... maybe slow. But
+  // this is embedded. Let's assume linear is okay or user calls createIndex?
+  // Actually, for insertion speed, a transient map/hash would help, but let's
+  // keep it simple O(D).
+
+  int16_t token = -1;
+  for (size_t i = 0; i < dictionary.size(); ++i) {
+    if (dictionary[i] == padded) {
+      token = (int16_t)i;
+      break;
     }
   }
 
-protected:
-  char *getWritableBuffer() override { return storage.data(); }
-  void resizeStorage(size_t byteSize) override {
-    storage.resize(byteSize);
-    index.clear();
-    sorted = false; // Reset safe
+  if (token == -1) {
+    // New Entry
+    if (dictionary.size() >= 65535) {
+      // Error: Dict Full. Fallback to token 0 or do nothing?
+      // For now, fail safe.
+      token = 0;
+    } else {
+      dictionary.push_back(padded);
+      token = dictionary.size() - 1;
+    }
   }
 
-private:
-  std::vector<char> storage;
-  std::vector<IndexEntry> index;
-  bool sorted = true;
-  size_t maxLength;
-};
+  // 3. Sorting Check
+  if (sorted && !data.empty()) {
+    const std::string &last = dictionary[data.back()];
+    if (padded < last)
+      sorted = false;
+  }
+
+  // 4. Store Token
+  data.push_back((uint16_t)token);
+
+  // 5. Invalidate Index
+  if (!index.empty())
+    index.clear();
+}
+
+std::string InternalStrColumn::getStr(size_t index) const {
+  if (index >= data.size())
+    return "";
+  uint16_t token = data[index];
+  if (token >= dictionary.size())
+    return ""; // Error
+  return dictionary[token];
+}
+
+void InternalStrColumn::createIndex() {
+  index.clear();
+  index.reserve(data.size());
+  for (size_t i = 0; i < data.size(); ++i) {
+    // Hash the ACTUAL string value
+    const std::string &val = dictionary[data[i]];
+    // Note: hashing padded string
+    uint32_t h = hashStr(val.c_str(), val.length());
+    index.push_back({h, (uint16_t)i});
+  }
+  std::sort(index.begin(), index.end());
+}
+
+int InternalStrColumn::find(const std::string &pattern) const {
+  // 1. Pad pattern
+  std::string searchPat = pattern;
+  if (searchPat.length() < maxLength) {
+    searchPat = std::string(maxLength - searchPat.length(), ' ') + searchPat;
+  } else if (searchPat.length() > maxLength) {
+    searchPat = searchPat.substr(0, maxLength);
+  }
+
+  // OPTIMIZATION: Check if valid token exists first!
+  int16_t token = -1;
+  for (size_t i = 0; i < dictionary.size(); ++i) {
+    if (dictionary[i] == searchPat) {
+      token = (int16_t)i;
+      break;
+    }
+  }
+  if (token == -1)
+    return -1; // Fast Fail: String not in DB.
+
+  // If found, now we search for 'token' in 'data'.
+
+  // Strategy 1: Index (Hash of string)
+  // If index exists, it maps Hash(String) -> RowIdx.
+  if (!index.empty()) {
+    uint32_t h = hashStr(searchPat.c_str(), searchPat.length());
+    auto it = std::lower_bound(index.begin(), index.end(), IndexEntry{h, 0});
+    while (it != index.end() && it->hash == h) {
+      // Resolve row -> token -> string
+      if (data[it->rowIdx] == token)
+        return it->rowIdx;
+      it++;
+    }
+    return -1;
+  }
+
+  // Strategy 2: Sorted (Token comparison?)
+  // Warning: 'sorted' means the strings are sorted, NOT the tokens.
+  // e.g. Dict: ["Apple"(0), "Banana"(1)]. Data: [0, 1]. Sorted.
+  // e.g. Dict: ["Banana"(0), "Apple"(1)]. Data: [1, 0]. Sorted Strings, but
+  // Tokens unsorted. So we can ONLY use binary search on 'data' if we assume
+  // logic... We can use std::lower_bound with a custom comparator that looks up
+  // dict!
+  if (sorted) {
+    // lower_bound on data, comparing looked-up strings
+    // Value to find: searchPat
+    auto it = std::lower_bound(data.begin(), data.end(), searchPat,
+                               [this](uint16_t t, const std::string &val) {
+                                 return this->dictionary[t] < val;
+                               });
+
+    if (it != data.end() && dictionary[*it] == searchPat) {
+      return std::distance(data.begin(), it);
+    }
+    return -1;
+  }
+
+  // Strategy 3: Linear Scan on Tokens (Fast integer compare)
+  for (size_t i = 0; i < data.size(); ++i) {
+    if (data[i] == token)
+      return i;
+  }
+
+  return -1;
+}
+
+// Persistence handled by SnailStorage friend access
 
 // =========================================================
 // SnailDB Implementation
