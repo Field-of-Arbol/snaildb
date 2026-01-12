@@ -53,10 +53,23 @@ public:
 
   // Search (Generic)
   virtual int find(const std::string &pattern) const = 0;
+
+  // Persistence (Raw Data Access)
+  virtual const char *getRawData() const = 0;
+  virtual size_t getByteSize() const = 0;
+  virtual void setRawData(const char *data, size_t size) = 0;
+
+protected:
+  friend class SnailStorage;
+  // Zero-Copy Write Interface
+  virtual char *getWritableBuffer() = 0;
+  virtual void resizeStorage(size_t byteSize) = 0;
 };
 
 // SnailDB Main Class
 class SnailDB {
+  friend class SnailStorage; // Allow access to private members for
+                             // serialization
 public:
   SnailDB();
   virtual ~SnailDB();

@@ -2,6 +2,7 @@
 #include "snaildb.h"
 #include <algorithm>
 #include <cstdlib> // for std::atoi
+#include <cstring> // for std::memcpy
 
 // =========================================================
 // Hashing Helper (DJB2)
@@ -102,6 +103,34 @@ public:
         return i;
     }
     return -1;
+  }
+
+  // Persistence
+  const char *getRawData() const override {
+    return reinterpret_cast<const char *>(storage.data());
+  }
+  size_t getByteSize() const override { return storage.size() * sizeof(int); }
+  void setRawData(const char *data, size_t size) override {
+    resizeStorage(size);
+    std::memcpy(getWritableBuffer(), data, size);
+    // Re-verify Sorting? (resizeStorage sets sorted=false currently for safety,
+    // or we verify later) For now, assume setRawData/load implies we need to
+    // check sort or set to false. The implementation below sets sorted=false.
+  }
+
+protected:
+  char *getWritableBuffer() override {
+    return reinterpret_cast<char *>(storage.data());
+  }
+  void resizeStorage(size_t byteSize) override {
+    size_t count = byteSize / sizeof(int);
+    storage.resize(count);
+    index.clear();
+    // We don't know the nature of incoming data yet.
+    // Mark unsorted for safety? Or check later?
+    // SnailStorage::load might assume default, or check.
+    // Let's reset smart flags.
+    sorted = false;
   }
 
 private:
@@ -278,6 +307,52 @@ public:
         return i;
     }
     return -1;
+  }
+
+  // Persistence
+  const char *getRawData() const override { return storage.data(); }
+  size_t getByteSize() const override { return storage.size(); }
+  void setRawData(const char *data, size_t size) override {
+    resizeStorage(size);
+    std::memcpy(getWritableBuffer(), data, size);
+
+    // Check Sorted State (Lazy check or full scan?)
+    // We essentially just overwrote all data.
+    // Let's rely on SnailStorage or manual verify.
+    // But for setRawData compatibility, let's keep the existing check logic if
+    // possible, or just default to sorted=false. The previous implementation
+    // tried to check. Let's copy the check logic here because setRawData is
+    // also used by... nobody else right now. But resizeStorage resets
+    // sorted=false.
+
+    sorted = true;
+    size_t count = size / maxLength;
+    if (count >= 2) {
+      for (size_t i = 1; i < count; ++i) {
+        size_t offsetA = (i - 1) * maxLength;
+        size_t offsetB = i * maxLength;
+        for (size_t k = 0; k < maxLength; ++k) {
+          char a = storage[offsetA + k];
+          char b = storage[offsetB + k];
+          if (b < a) {
+            sorted = false;
+            break;
+          }
+          if (b > a)
+            break;
+        }
+        if (!sorted)
+          break;
+      }
+    }
+  }
+
+protected:
+  char *getWritableBuffer() override { return storage.data(); }
+  void resizeStorage(size_t byteSize) override {
+    storage.resize(byteSize);
+    index.clear();
+    sorted = false; // Reset safe
   }
 
 private:
